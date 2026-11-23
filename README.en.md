@@ -1,0 +1,142 @@
+# Feishu ↔ dot
+
+### Keep talking to your dot, from Feishu
+
+Connect your own Feishu bot DM to the dot you already use. Send a question from Feishu, let dot work on it, and bring an authorized text reply back to the original message. With image input enabled, dot can also view newly received PNG/JPEG images. Optional image output sends explicitly requested current generated images to the same paired DM; callers submit status cards explicitly.
+
+**One personal installation, on your own host.** Bring your Feishu app and owner-only official OpenAI Tunnel. The bridge connects them; it does not run a model or provide a shared hosted service.
+
+[中文](README.md) · [Get started](docs/DEPLOYMENT.md) · [Features](#what-you-can-do) · [Security](SECURITY.md)
+
+- **A familiar chat entry point:** continue with dot in your existing Feishu DM.
+- **Your deployment to manage:** control the host, app configuration and database.
+- **Delivery states you can check:** distinguish queued, API-accepted and uncertain results.
+
+## Local enhancement: Feishu Get receipt
+
+Source snapshot based on upstream [yaodiff/feishu-dot-bridge](https://github.com/yaodiff/feishu-dot-bridge/tree/ae337fb1dc70dff4e355bf785418cab712f12031), with its [MIT license](LICENSE) preserved.
+
+- Once a fresh, plain-text message in the paired owner's DM passes validation and deduplication and is stored, the bridge attempts to add Feishu's `Get` reaction to the original message.
+- The reaction is asynchronous and best effort: it does not wait for Dot, block WebSocket acknowledgement, or hold up the event callback. Group messages, pairing commands, duplicates, stale messages, and blocked or unsupported content do not receive it.
+- Off by default and supported only in personal WebSocket mode. Set `FEISHU_GET_REACTION=on` and grant the Feishu app `im:message.reactions:write_only` to enable it. A reaction marks receipt by the bridge, not Dot processing or task completion; progress cards remain separate and must be submitted by the caller.
+
+<picture>
+  <source media="(max-width: 600px)" srcset="docs/assets/bridge-flow.en.mobile.svg">
+  <img src="docs/assets/bridge-flow.en.svg" alt="Illustrated flow: your Feishu DM enters a self-hosted bridge over WebSocket; events notify dot. Dot calls tools through the official Tunnel, and the bridge sends authorized replies to Feishu." width="1280">
+</picture>
+
+*Original diagram, not a product screenshot. Event notifications and tool calls use different paths. Feishu WebSocket intake needs no public event callback; replies still require dot to call the send tool.*
+
+## What you can do
+
+| Your goal | What the bridge connects |
+| --- | --- |
+| Continue from Feishu | Receive text and rich posts in your paired bot DM and notify your existing dot; links in posts stay unopened |
+| Bring the answer back | Dot calls `reply_to_feishu` to reply to the original message; authorized ChatGPT text can also be sent as a source-labeled copy to the current paired DM |
+| Show dot an image | Opt-in PNG/JPEG input, including up to four new embedded post images, locally stripped of metadata and re-encoded |
+| Bring back a current generated image | Opt-in PNG/JPEG output: a trusted adapter supplies actual image bytes for upload and message delivery, with separate receipts |
+| Share task status | Explicit processing, confirmation wait, completion, failure or blocked cards; ordinary updates PATCH one card, important waits send a new card, and the button only opens the official dot entry |
+| See which inputs are handled | Per-event processing, approval waits, no-reply decisions and merged-reply coverage, alongside separate queue and API acceptance states |
+| Run on your own host | SQLite-backed inbox and delivery state with host process supervision; one owner, Feishu app and current DM binding per installation |
+
+The default catalog has **16 MCP tools**, including status submission and output queries. `FEISHU_MEDIA_INPUT=images-v1` adds `get_event_image`; `FEISHU_IMAGE_OUTPUT=on` adds two image staging/sending tools. Input alone gives 17 tools, output alone 18, and both enabled 19. Input and output are separate opt-ins limited to bounded PNG/JPEG. Image processing, disclosure and status sends still require explicit authorization. Audio and transcription are unsupported. The bridge does not automatically capture every dot answer or approval; clicking a Feishu card does not approve dot permissions.
+
+## Architecture: two separate paths
+
+```text
+[A] Intake + notification (authorized subscription; not a reply)
+Feishu DM --WebSocket--> bridge --MCP Events / callback--> dot
+                            |
+                            +--> SQLite: inbox + handling ledger
+
+[B] Authorized output (dot must call explicitly)
+dot --MCP tools--> Official OpenAI Tunnel --loopback MCP--> bridge
+                                                           |
+                          Feishu DM <--Feishu API-----------+
+                                                           |
+                          SQLite: outbox + receipts <-------+
+```
+
+`[A]` persists new inputs and notifies/wakes dot; callback acceptance does not mean processing is complete. In `[B]`, dot calls tools through the owner's official Tunnel before the bridge sends text, bounded PNG/JPEG or status cards. Intake, handling decisions, output queues and receipts are recorded separately. `sent` means API acceptance only; `uncertain` is never automatically resent. The bridge runs no model and does not automatically capture every dot answer or approval.
+
+## Usage examples
+
+<picture>
+  <source media="(max-width: 600px)" srcset="docs/assets/usage-examples.en.mobile.svg">
+  <img src="docs/assets/usage-examples.en.svg" alt="Synthetic examples, not real chat screenshots: authorized text reply, actual-byte image delivery, progress updates to the same card, and a confirmation card that only opens the official dot entry." width="1440">
+</picture>
+
+*Original synthetic examples, not real chat screenshots. No user chats, account or receipt identifiers are included. Layout illustrates behavior, not identical rendering in every client; see the separate [acceptance record](docs/ACCEPTANCE.md).*
+
+| Example | Required call and boundary |
+| --- | --- |
+| Text reply | `reply_to_feishu` sends an authorized reply to the original message |
+| Current generated image | A trusted adapter supplies actual bytes of the current user-requested image; opt-in output stages, uploads and sends it, with separate receipts. A private link is not an image delivery |
+| Progress update | Callers submit states explicitly; ordinary updates PATCH one card. Completion is not automatically inferred by observing dot |
+| Confirmation wait | An important wait sends a new card with action and reason. The button opens the official dot entry; the user confirms in the original Activity request. Feishu clicks grant no permission |
+
+Image input and output are separate opt-ins limited to bounded PNG/JPEG. Audio and transcription are unsupported. All outputs target the owner's current paired DM and require explicit authorization. This is a personal self-hosted bridge, not a shared hosted service.
+
+## Before you start
+
+- **Host:** Linux/macOS, Node.js 24+, npm, persistent disk, process supervision and outbound HTTPS/WebSocket access. Image mode additionally needs Linux `/usr/bin/prlimit` and the pinned `sharp` dependencies.
+- **Feishu:** your own app, verified app/tenant and private-message permissions. Use one event consumer per app and one bridge process per database.
+- **Dot:** an existing dot and an owner-only official OpenAI Tunnel. Your actual account must support the required MCP Events and Tunnel combination; check the [deployment requirements](docs/DEPLOYMENT.md#1-选择和检查主机).
+
+## Start from source
+
+Use a fresh directory. Keep any existing installation's configuration and database intact:
+
+```sh
+git clone https://github.com/yaodiff/feishu-dot-bridge.git
+cd feishu-dot-bridge
+npm ci --ignore-scripts
+npm run init:personal
+```
+
+Initialization builds the source and creates private configuration and unique random keys. It refuses to overwrite an existing `.env`, `config` or `data`. It does not create your Feishu app, Tunnel or platform permissions.
+
+Then follow the [full deployment guide](docs/DEPLOYMENT.md):
+
+1. **Configure Feishu.** Fill the verified app, tenant and App Secret locally. Confirm there is no competing consumer before enabling `websocketExclusiveConsumer`.
+2. **Start and connect.** Run `node --env-file=.env dist/src/main.js`. Point your owner-only official Tunnel at `http://127.0.0.1:3000/mcp` and inject the local `X-Bridge-Token`. Keep the bridge on loopback.
+3. **Pair, then authorize.** Connect in dot and verify the tool catalog. Ask dot for a pairing command and send it yourself to your bot DM. Confirm the binding, then authorize the event subscription and reply/text-copy scope.
+
+UI authentication “None” means no separate OAuth flow; backend key validation remains mandatory. Do not share the personal Tunnel. For an existing installation, use the [backup and upgrade process](docs/DEPLOYMENT.md#7-租期备份与维护) rather than initializing again.
+
+## Try it before relying on it
+
+Short live checks have observed text flowing both ways, event recovery reads and one merged reply with recorded coverage; see the [real acceptance record](docs/ACCEPTANCE.md#live-merged-text-check-2026-10-10). An authorized live check also observed real image upload/send and status-card create/PATCH; see the [output acceptance boundaries](docs/ACCEPTANCE.md#live-explicit-output-check-2026-10-10). This is experimental software. Those checks do not establish uninterrupted availability or greater reliability than cloud hosting.
+
+- **Dot initiates replies.** A dot answer does not create a Feishu reply. The caller checks for missing work on a wake; no independent automatic resend service is supplied.
+- **Delivery states differ.** Callback acceptance does not prove dot processed an event. `pending` is queued; `sent` means API acceptance, not display/read confirmation. Verify the destination before retrying `uncertain` outcomes.
+- **Recovery has limits.** It applies to persisted events and jobs. There is no history-backfill guarantee; subscriptions expire, and image references expire or disappear on restart. See [disconnect and recovery](docs/DEPLOYMENT.md#8-断连与恢复的范围).
+- **Protect your data.** Data still passes through OpenAI. SQLite message bodies are not application-encrypted; credential detection can miss secrets, and metadata removal cannot detect secrets in pixels. Keep configuration, disks and backups private, and real messages and secrets out of source control.
+
+The project targets personal bot DMs. Group routing, multi-user sharing, history backfill and native ChatGPT message capture are unsupported. See [security](SECURITY.md) and the [per-installation checklist](docs/ACCEPTANCE.md).
+
+### Local checks
+
+```sh
+npm test
+npm run demo
+```
+
+The full suite requires Linux, `/usr/bin/prlimit`, `openssl` and `mkfifo`. macOS text-runtime support does not imply full-suite support. Tests and demo use synthetic data and simulated services, not real Feishu or dot accounts; they do not replace live acceptance.
+
+## Go deeper
+
+| Next step | Documentation |
+| --- | --- |
+| Install, connect a Tunnel, back up or upgrade | [Personal deployment](docs/DEPLOYMENT.md) |
+| Handle native approval pauses and wait notices | [Confirmation reminders and recovery boundaries](docs/WAIT_CONFIRMATION.md) |
+| Configure dot's processing and reply workflow | [Per-event handling](docs/EVENT_HANDLING.md) · [Owned reads](docs/OWNED_EVENT_READS.md) |
+| Enable images or understand rich posts | [Image input](docs/MEDIA_INPUT_CANDIDATE.md) · [Rich posts](docs/RICH_POST_INPUT.md) |
+| Send current generated images or explicit status cards | [Output delivery and media handoff](docs/OUTPUT_DELIVERY_CANDIDATE.md) |
+| Send authorized ChatGPT text copies | [Text mirroring](docs/TEXT_MIRROR_V1.md) |
+| Diagnose transport or clean old inbox history | [Transport configuration](docs/DEPLOYMENT.md#9-可选传输与兼容模式) · [Offline maintenance](docs/OFFLINE_MAINTENANCE.md) |
+| Understand protocols, permissions and contribution | [Protocol](docs/PROTOCOL.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) |
+
+## License
+
+Source is [MIT](LICENSE). Image dependencies and prebuilt native components have separate licenses. Review the [third-party terms and obligations](docs/DEPENDENCY_LICENSES.md) before distribution.
